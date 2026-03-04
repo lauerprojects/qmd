@@ -36,8 +36,10 @@
     "url": "https://github.com/tobi/qmd/issues"
   },
   "dependencies": {
+    "@mariozechner/pi-ai": "^0.55.4",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "better-sqlite3": "^11.0.0",
+    "dotenv": "^17.3.1",
     "fast-glob": "^3.3.0",
     "node-llama-cpp": "^3.14.5",
     "picomatch": "^4.0.0",

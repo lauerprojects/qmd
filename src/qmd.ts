@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { openDatabase } from "./db.js";
 import type { Database } from "./db.js";
 import fastGlob from "fast-glob";
@@ -70,7 +71,7 @@ import {
   createStore,
   getDefaultDbPath,
 } from "./store.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "./llm.js";
+import { disposeDefaultLLM, getDefaultLLM, withLLMSession, pullModels, DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI, DEFAULT_MODEL_CACHE_DIR } from "./llm.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -397,7 +398,7 @@ async function showStatus(): Promise<void> {
 
   // Device / GPU info
   try {
-    const llm = getDefaultLlamaCpp();
+    const llm = getDefaultLLM();
     const device = await llm.getDeviceInfo();
     console.log(`\n${c.bold}Device${c.reset}`);
     if (device.gpu) {
@@ -2893,7 +2894,7 @@ if (isMain) {
   }
 
   if (cli.command !== "mcp") {
-    await disposeDefaultLlamaCpp();
+    await disposeDefaultLLM();
     process.exit(0);
   }
 

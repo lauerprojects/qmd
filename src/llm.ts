@@ -18,6 +18,9 @@ import {
 import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, statSync, unlinkSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { RemoteLLM } from "./remote-llm.js";
+import { HybridLLM } from "./hybrid-llm.js";
+import type { LLMBackend } from "./hybrid-llm.js";
 
 // =============================================================================
 // Embedding Formatting Functions
@@ -39,138 +42,37 @@ export function formatDocForEmbedding(text: string, title?: string): string {
   return `title: ${title || "none"} | text: ${text}`;
 }
 
-// =============================================================================
-// Types
-// =============================================================================
+import type {
+  LLM,
+  EmbedOptions,
+  EmbeddingResult,
+  GenerateOptions,
+  GenerateResult,
+  ModelInfo,
+  Queryable,
+  RerankDocument,
+  RerankOptions,
+  RerankResult,
+  RerankDocumentResult,
+  TokenLogProb,
+  QueryType
+} from "./llm-types.js";
 
-/**
- * Token with log probability
- */
-export type TokenLogProb = {
-  token: string;
-  logprob: number;
+export type {
+  LLM,
+  EmbedOptions,
+  EmbeddingResult,
+  GenerateOptions,
+  GenerateResult,
+  ModelInfo,
+  Queryable,
+  RerankDocument,
+  RerankOptions,
+  RerankResult,
+  RerankDocumentResult,
+  TokenLogProb,
+  QueryType
 };
-
-/**
- * Embedding result
- */
-export type EmbeddingResult = {
-  embedding: number[];
-  model: string;
-};
-
-/**
- * Generation result with optional logprobs
- */
-export type GenerateResult = {
-  text: string;
-  model: string;
-  logprobs?: TokenLogProb[];
-  done: boolean;
-};
-
-/**
- * Rerank result for a single document
- */
-export type RerankDocumentResult = {
-  file: string;
-  score: number;
-  index: number;
-};
-
-/**
- * Batch rerank result
- */
-export type RerankResult = {
-  results: RerankDocumentResult[];
-  model: string;
-};
-
-/**
- * Model info
- */
-export type ModelInfo = {
-  name: string;
-  exists: boolean;
-  path?: string;
-};
-
-/**
- * Options for embedding
- */
-export type EmbedOptions = {
-  model?: string;
-  isQuery?: boolean;
-  title?: string;
-};
-
-/**
- * Options for text generation
- */
-export type GenerateOptions = {
-  model?: string;
-  maxTokens?: number;
-  temperature?: number;
-};
-
-/**
- * Options for reranking
- */
-export type RerankOptions = {
-  model?: string;
-};
-
-/**
- * Options for LLM sessions
- */
-export type LLMSessionOptions = {
-  /** Max session duration in ms (default: 10 minutes) */
-  maxDuration?: number;
-  /** External abort signal */
-  signal?: AbortSignal;
-  /** Debug name for logging */
-  name?: string;
-};
-
-/**
- * Session interface for scoped LLM access with lifecycle guarantees
- */
-export interface ILLMSession {
-  embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
-  embedBatch(texts: string[]): Promise<(EmbeddingResult | null)[]>;
-  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
-  rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
-  /** Whether this session is still valid (not released or aborted) */
-  readonly isValid: boolean;
-  /** Abort signal for this session (aborts on release or maxDuration) */
-  readonly signal: AbortSignal;
-}
-
-/**
- * Supported query types for different search backends
- */
-export type QueryType = 'lex' | 'vec' | 'hyde';
-
-/**
- * A single query and its target backend type
- */
-export type Queryable = {
-  type: QueryType;
-  text: string;
-};
-
-/**
- * Document to rerank
- */
-export type RerankDocument = {
-  file: string;
-  text: string;
-  title?: string;
-};
-
-// =============================================================================
-// Model Configuration
-// =============================================================================
 
 // HuggingFace model URIs for node-llama-cpp
 // Format: hf:<user>/<repo>/<file>
@@ -286,44 +188,33 @@ export async function pullModels(
 }
 
 // =============================================================================
-// LLM Interface
+// Session Types
 // =============================================================================
 
 /**
- * Abstract LLM interface - implement this for different backends
+ * Options for LLM sessions
  */
-export interface LLM {
-  /**
-   * Get embeddings for text
-   */
+export type LLMSessionOptions = {
+  /** Max session duration in ms (default: 10 minutes) */
+  maxDuration?: number;
+  /** External abort signal */
+  signal?: AbortSignal;
+  /** Debug name for logging */
+  name?: string;
+};
+
+/**
+ * Session interface for scoped LLM access with lifecycle guarantees
+ */
+export interface ILLMSession {
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
-
-  /**
-   * Generate text completion
-   */
-  generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null>;
-
-  /**
-   * Check if a model exists/is available
-   */
-  modelExists(model: string): Promise<ModelInfo>;
-
-  /**
-   * Expand a search query into multiple variations for different backends.
-   * Returns a list of Queryable objects.
-   */
-  expandQuery(query: string, options?: { context?: string, includeLexical?: boolean }): Promise<Queryable[]>;
-
-  /**
-   * Rerank documents by relevance to a query
-   * Returns list of documents with relevance scores (higher = more relevant)
-   */
+  embedBatch(texts: string[]): Promise<(EmbeddingResult | null)[]>;
+  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
   rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
-
-  /**
-   * Dispose of resources
-   */
-  dispose(): Promise<void>;
+  /** Whether this session is still valid (not released or aborted) */
+  readonly isValid: boolean;
+  /** Abort signal for this session (aborts on release or maxDuration) */
+  readonly signal: AbortSignal;
 }
 
 // =============================================================================
@@ -352,12 +243,12 @@ export type LlamaCppConfig = {
   disposeModelsOnInactivity?: boolean;
 };
 
-/**
- * LLM implementation using node-llama-cpp
- */
 // Default inactivity timeout: 5 minutes (keep models warm during typical search sessions)
 const DEFAULT_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * LLM implementation using node-llama-cpp
+ */
 export class LlamaCpp implements LLM {
   private llama: Llama | null = null;
   private embedModel: LlamaModel | null = null;
@@ -384,7 +275,6 @@ export class LlamaCpp implements LLM {
   // Track disposal state to prevent double-dispose
   private disposed = false;
 
-
   constructor(config: LlamaCppConfig = {}) {
     this.embedModelUri = config.embedModel || DEFAULT_EMBED_MODEL;
     this.generateModelUri = config.generateModel || DEFAULT_GENERATE_MODEL;
@@ -408,9 +298,8 @@ export class LlamaCpp implements LLM {
     // Only set timer if we have disposable contexts and timeout is enabled
     if (this.inactivityTimeoutMs > 0 && this.hasLoadedContexts()) {
       this.inactivityTimer = setTimeout(() => {
-        // Check if session manager allows unloading
-        // canUnloadLLM is defined later in this file - it checks the session manager
-        // We use dynamic import pattern to avoid circular dependency issues
+        // canUnloadLLM is defined later in this file; JS function hoisting makes it
+        // accessible here at call time even though it's declared after this class.
         if (typeof canUnloadLLM === 'function' && !canUnloadLLM()) {
           // Active sessions/operations - reschedule timer
           this.touchActivity();
@@ -719,7 +608,7 @@ export class LlamaCpp implements LLM {
    * Each context has its own sequence, so they can evaluate independently.
    *
    * Tuning choices:
-   * - contextSize 1024: reranking chunks are ~800 tokens max, 1024 is plenty
+   * - contextSize 2048: reranking chunks are ~800 tokens max, plus ~200 template overhead
    * - flashAttention: ~20% less VRAM per context (568 vs 711 MB)
    * - Combined: drops from 11.6 GB (auto, no flash) to 568 MB per context (20×)
    */
@@ -1362,17 +1251,45 @@ function getSessionManager(): LLMSessionManager {
  * }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
  * ```
  */
+
 export async function withLLMSession<T>(
   fn: (session: ILLMSession) => Promise<T>,
   options?: LLMSessionOptions
 ): Promise<T> {
-  const manager = getSessionManager();
-  const session = new LLMSession(manager, options);
+  const llm = getDefaultLLM();
 
-  try {
+  if (llm instanceof LlamaCpp) {
+    const manager = getSessionManager();
+    const session = new LLMSession(manager, options);
+
+    try {
+      return await fn(session);
+    } finally {
+      session.release();
+    }
+  } else if (llm instanceof HybridLLM) {
+    // HybridLLM routes ops to local or remote backends. LlamaCpp manages its own
+    // context pool internally, so no explicit session acquisition is needed here.
+    const session: ILLMSession = {
+      isValid: true,
+      signal: options?.signal || new AbortController().signal,
+      embed: (text, opts) => llm.embed(text, opts),
+      embedBatch: (texts) => llm.embedBatch(texts),
+      expandQuery: (query, opts) => llm.expandQuery(query, opts),
+      rerank: (query, docs, opts) => llm.rerank(query, docs, opts),
+    };
     return await fn(session);
-  } finally {
-    session.release();
+  } else {
+    // RemoteLLM fallback
+    const session: ILLMSession = {
+      isValid: true,
+      signal: options?.signal || new AbortController().signal,
+      embed: (text, opts) => llm.embed(text, opts),
+      embedBatch: (texts) => (llm as any).embedBatch ? (llm as any).embedBatch(texts) : Promise.all(texts.map(t => llm.embed(t))),
+      expandQuery: (query, opts) => llm.expandQuery(query, opts),
+      rerank: (query, docs, opts) => llm.rerank(query, docs, opts),
+    };
+    return await fn(session);
   }
 }
 
@@ -1386,35 +1303,81 @@ export function canUnloadLLM(): boolean {
 }
 
 // =============================================================================
-// Singleton for default LlamaCpp instance
+// Singleton for default LLM instance
 // =============================================================================
 
-let defaultLlamaCpp: LlamaCpp | null = null;
+let defaultLLM: LLM | null = null;
 
 /**
- * Get the default LlamaCpp instance (creates one if needed)
+ * Get the default LLM instance (creates one if needed).
+ * Configures a HybridLLM that can route operations between local and remote backends.
  */
+export function getDefaultLLM(): LLM {
+  if (!defaultLLM) {
+    const apiKey = process.env.QMD_REMOTE_API_KEY;
+    const local = new LlamaCpp();
+    let remote: RemoteLLM | undefined;
+
+    if (apiKey) {
+      remote = new RemoteLLM({
+        apiKey,
+        baseURL: process.env.QMD_REMOTE_BASE_URL,
+        embedModel: process.env.QMD_REMOTE_EMBED_MODEL,
+        generateModel: process.env.QMD_REMOTE_GENERATE_MODEL,
+        rerankModel: process.env.QMD_REMOTE_RERANK_MODEL,
+        timeoutMs: process.env.QMD_REMOTE_TIMEOUT ? parseInt(process.env.QMD_REMOTE_TIMEOUT) : undefined
+      });
+    }
+
+    // Determine backends based on env vars or defaults
+    // If remote is available:
+    //   Embed: Remote
+    //   Generate: Remote
+    //   Rerank: Local (default per user request)
+    //   Tokenize: Local (default per user request)
+    const hasRemote = !!remote;
+
+    const embedBackend = (process.env.QMD_EMBED_BACKEND as LLMBackend) || (hasRemote ? 'remote' : 'local');
+    const generateBackend = (process.env.QMD_GENERATE_BACKEND as LLMBackend) || (hasRemote ? 'remote' : 'local');
+    const rerankBackend = (process.env.QMD_RERANK_BACKEND as LLMBackend) || 'local';
+    const tokenizeBackend = (process.env.QMD_TOKENIZE_BACKEND as LLMBackend) || 'local';
+
+    defaultLLM = new HybridLLM(local, remote, {
+      embedBackend,
+      generateBackend,
+      rerankBackend,
+      tokenizeBackend
+    });
+  }
+  return defaultLLM;
+}
+
+/**
+ * Set a custom default LLM instance (useful for testing)
+ */
+export function setDefaultLLM(llm: LLM | null): void {
+  defaultLLM = llm;
+}
+
+/**
+ * Dispose the default LLM instance if it exists.
+ * Call this before process exit to prevent NAPI crashes or hanging connections.
+ */
+export async function disposeDefaultLLM(): Promise<void> {
+  if (defaultLLM) {
+    await defaultLLM.dispose();
+    defaultLLM = null;
+  }
+}
+
+// Returns the default LLM cast to LlamaCpp. Throws if a non-LlamaCpp backend is active.
+// Prefer getDefaultLLM() for code that works with any backend.
 export function getDefaultLlamaCpp(): LlamaCpp {
-  if (!defaultLlamaCpp) {
-    defaultLlamaCpp = new LlamaCpp();
+  const llm = getDefaultLLM();
+  if (llm instanceof LlamaCpp) {
+    return llm;
   }
-  return defaultLlamaCpp;
+  throw new Error("Default LLM is not LlamaCpp (remote mode enabled?)");
 }
 
-/**
- * Set a custom default LlamaCpp instance (useful for testing)
- */
-export function setDefaultLlamaCpp(llm: LlamaCpp | null): void {
-  defaultLlamaCpp = llm;
-}
-
-/**
- * Dispose the default LlamaCpp instance if it exists.
- * Call this before process exit to prevent NAPI crashes.
- */
-export async function disposeDefaultLlamaCpp(): Promise<void> {
-  if (defaultLlamaCpp) {
-    await defaultLlamaCpp.dispose();
-    defaultLlamaCpp = null;
-  }
-}
+export const disposeDefaultLlamaCpp = disposeDefaultLLM;

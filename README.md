@@ -2,7 +2,7 @@
 
 An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
 
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking. By default everything runs locally via node-llama-cpp with GGUF models; embeddings and query expansion can optionally be routed to any OpenAI-compatible API.
+QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking. By default everything runs locally via node-llama-cpp with GGUF models; embeddings, query expansion, and reranking can optionally be routed to any OpenAI-compatible API.
 
 ![QMD Architecture](assets/qmd-architecture.png)
 
@@ -186,8 +186,8 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
                                       ▼
                           ┌───────────────────────┐
                           │    LLM Re-ranking     │
-                          │  (qwen3-reranker)     │
-                          │  Yes/No + logprobs    │
+                          │  local: qwen3-reranker│
+                          │  remote: listwise LLM │
                           └───────────┬───────────┘
                                       │
                                       ▼
@@ -207,7 +207,8 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 |---------|-----------|------------|-------|
 | **FTS (BM25)** | SQLite FTS5 BM25 | `Math.abs(score)` | 0 to ~25+ |
 | **Vector** | Cosine distance | `1 / (1 + distance)` | 0.0 to 1.0 |
-| **Reranker** | LLM 0-10 rating | `score / 10` | 0.0 to 1.0 |
+| **Reranker (local)** | LLM logprob confidence | normalized | 0.0 to 1.0 |
+| **Reranker (remote)** | LLM 0.0–1.0 score | min-max normalized per batch | 0.0 to 1.0 |
 
 ### Fusion Strategy
 
@@ -218,7 +219,7 @@ The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware bl
 3. **RRF Fusion**: Combine all result lists using `score = Σ(1/(k+rank+1))` where k=60
 4. **Top-Rank Bonus**: Documents ranking #1 in any list get +0.05, #2-3 get +0.02
 5. **Top-K Selection**: Take top 30 candidates for reranking
-6. **Re-ranking**: LLM scores each document (yes/no with logprobs confidence)
+6. **Re-ranking**: LLM scores each document (local: logprob confidence; remote: listwise 0–1 scoring)
 7. **Position-Aware Blending**:
    - RRF rank 1-3: 75% retrieval, 25% reranker (preserves exact matches)
    - RRF rank 4-10: 60% retrieval, 40% reranker
@@ -487,7 +488,7 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 
 ## Remote LLM & Embeddings
 
-By default QMD runs everything locally via node-llama-cpp. You can offload embeddings and/or query expansion to any OpenAI-compatible API (OpenRouter, OpenAI, a local Ollama server, etc.) by setting environment variables — no code changes required.
+By default QMD runs everything locally via node-llama-cpp. You can offload embeddings, query expansion, and/or reranking to any OpenAI-compatible API (OpenRouter, OpenAI, a local Ollama server, etc.) by setting environment variables — no code changes required.
 
 ### Quick setup
 
@@ -504,13 +505,13 @@ QMD_REMOTE_API_KEY="sk-..."
 
 # Which models to use on the remote API
 QMD_REMOTE_EMBED_MODEL="openai/text-embedding-3-small"
-QMD_REMOTE_GENERATE_MODEL="openai/gpt-4o-mini"
-# QMD_REMOTE_RERANK_MODEL is optional; remote reranking is not yet implemented
+QMD_REMOTE_GENERATE_MODEL="openrouter/openai/gpt-4o-mini"
+QMD_REMOTE_RERANK_MODEL="openrouter/deepseek/deepseek-v3.2"   # optional; falls back to GENERATE_MODEL if unset
 
 # Route each operation to 'local' or 'remote'
 QMD_EMBED_BACKEND="remote"      # default: remote when API key is set, otherwise local
 QMD_GENERATE_BACKEND="remote"   # default: remote when API key is set, otherwise local
-QMD_RERANK_BACKEND="local"      # default: local (remote reranking not yet supported)
+QMD_RERANK_BACKEND="remote"     # default: remote when QMD_REMOTE_RERANK_MODEL is set, otherwise local
 QMD_TOKENIZE_BACKEND="local"    # default: local
 
 # Request timeout in ms (default: 60000)
@@ -525,19 +526,64 @@ When `QMD_REMOTE_API_KEY` is set, QMD creates a `HybridLLM` that routes each ope
 |-----------|----------------|-------|
 | Embeddings (`qmd embed`) | Remote | Sent as a batch to `/embeddings` |
 | Query expansion (`qmd query`) | Remote | Uses the chat completions API |
-| Reranking (`qmd query`) | Local | Remote reranking falls back to original order |
+| Reranking (`qmd query`) | Remote if `QMD_REMOTE_RERANK_MODEL` is set, else local | See below |
 | Tokenization | Local | Used for chunking; always runs locally |
 
 If no API key is set, all operations fall back to local node-llama-cpp models automatically.
 
+### Remote reranking
+
+Remote reranking uses a **listwise scoring** approach: the LLM receives a batch of document chunks alongside the query and returns a JSON array of relevance scores (0.0–1.0), one per chunk. Scores are min-max normalized within each batch so the model's scale doesn't matter.
+
+The reranker prompt includes:
+- The file path of each chunk (a strong signal when filenames match the query)
+- A scoring rubric with four bands (0.9–1.0 direct match → 0.0–0.2 unrelated)
+- An explicit format example to prevent the model from adding prose
+
+Documents are processed in batches of 15 to stay within context windows. Results are cached in SQLite so repeated queries don't re-call the API.
+
+**Tuning:**
+
+```sh
+# Limit how many characters of each chunk are sent to the reranker (default: 1200)
+# Reduce to lower latency/cost; increase for longer documents
+QMD_RERANK_CHUNK_CHARS=800
+```
+
+**Debugging rerank:**
+
+```sh
+# Print pre/post rerank order and LLM prompt+response to stderr
+QMD_DEBUG_RERANK=1 qmd query "your search"
+```
+
+This shows:
+- The ranked order before reranking (from RRF fusion)
+- Which docs were cached vs sent to the LLM
+- The exact prompt and raw JSON response for each batch
+- The parsed scores and any parse errors
+- The final ranked order with scores and position changes (e.g. `was #4`)
+
 ### Recommended configurations
 
-**Fastest indexing** — use a hosted embedding model, keep reranking local:
+**Fully remote** — all operations via API, no local models needed:
+```sh
+QMD_REMOTE_API_KEY="sk-..."
+QMD_REMOTE_EMBED_MODEL="openai/text-embedding-3-small"
+QMD_REMOTE_GENERATE_MODEL="openrouter/openai/gpt-4o-mini"
+QMD_REMOTE_RERANK_MODEL="openrouter/deepseek/deepseek-v3.2"
+QMD_EMBED_BACKEND="remote"
+QMD_GENERATE_BACKEND="remote"
+QMD_RERANK_BACKEND="remote"
+```
+
+**Fastest indexing** — remote embeddings, local reranking:
 ```sh
 QMD_REMOTE_API_KEY="sk-..."
 QMD_REMOTE_EMBED_MODEL="openai/text-embedding-3-small"
 QMD_EMBED_BACKEND="remote"
 QMD_GENERATE_BACKEND="local"
+QMD_RERANK_BACKEND="local"
 ```
 
 **Fully local** (default, no env vars needed):
@@ -552,9 +598,11 @@ qmd query "my search"
 QMD_REMOTE_API_KEY="sk-..."
 QMD_REMOTE_BASE_URL="https://api.openai.com/v1"
 QMD_REMOTE_EMBED_MODEL="text-embedding-3-small"
-QMD_REMOTE_GENERATE_MODEL="gpt-4o-mini"
+QMD_REMOTE_GENERATE_MODEL="openai/gpt-4o-mini"
+QMD_REMOTE_RERANK_MODEL="openai/gpt-4o-mini"
 QMD_EMBED_BACKEND="remote"
 QMD_GENERATE_BACKEND="remote"
+QMD_RERANK_BACKEND="remote"
 ```
 
 **Ollama** (local server, OpenAI-compatible):
@@ -563,8 +611,10 @@ QMD_REMOTE_API_KEY="ollama"
 QMD_REMOTE_BASE_URL="http://localhost:11434/v1"
 QMD_REMOTE_EMBED_MODEL="nomic-embed-text"
 QMD_REMOTE_GENERATE_MODEL="qwen2.5:1.5b"
+QMD_REMOTE_RERANK_MODEL="qwen2.5:1.5b"
 QMD_EMBED_BACKEND="remote"
 QMD_GENERATE_BACKEND="remote"
+QMD_RERANK_BACKEND="remote"
 ```
 
 > **Note:** Embeddings generated with a remote model are not compatible with embeddings generated by the local embeddinggemma model. If you switch `QMD_EMBED_BACKEND`, re-run `qmd embed -f` to regenerate all vectors.
@@ -577,13 +627,15 @@ QMD_GENERATE_BACKEND="remote"
 | `QMD_REMOTE_API_KEY` | — | API key for remote LLM/embedding provider |
 | `QMD_REMOTE_BASE_URL` | `https://openrouter.ai/api/v1` | Base URL for OpenAI-compatible API |
 | `QMD_REMOTE_EMBED_MODEL` | `text-embedding-3-small` | Embedding model name on the remote API |
-| `QMD_REMOTE_GENERATE_MODEL` | `openai/gpt-3.5-turbo` | Generation model name on the remote API |
-| `QMD_REMOTE_RERANK_MODEL` | — | Rerank model (reserved; not yet used) |
+| `QMD_REMOTE_GENERATE_MODEL` | `openai/gpt-3.5-turbo` | Generation/query-expansion model on the remote API |
+| `QMD_REMOTE_RERANK_MODEL` | — | Rerank model on the remote API; falls back to `QMD_REMOTE_GENERATE_MODEL` if unset |
 | `QMD_REMOTE_TIMEOUT` | `60000` | Remote request timeout in ms |
 | `QMD_EMBED_BACKEND` | `remote` if key set, else `local` | `local` or `remote` |
 | `QMD_GENERATE_BACKEND` | `remote` if key set, else `local` | `local` or `remote` |
-| `QMD_RERANK_BACKEND` | `local` | `local` or `remote` |
+| `QMD_RERANK_BACKEND` | `remote` if `QMD_REMOTE_RERANK_MODEL` set, else `local` | `local` or `remote` |
 | `QMD_TOKENIZE_BACKEND` | `local` | `local` or `remote` |
+| `QMD_RERANK_CHUNK_CHARS` | `1200` | Max characters of each chunk sent to the remote reranker |
+| `QMD_DEBUG_RERANK` | — | Set to `1` to print rerank prompt, response, and score changes to stderr |
 
 ## How It Works
 
@@ -705,9 +757,13 @@ const DEFAULT_GENERATE_MODEL = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query
 "title: {title} | text: {content}"
 ```
 
-### Qwen3-Reranker
+### Qwen3-Reranker (local)
 
-Uses node-llama-cpp's `createRankingContext()` and `rankAndSort()` API for cross-encoder reranking. Returns documents sorted by relevance score (0.0 - 1.0).
+Uses node-llama-cpp's `createRankingContext()` and `rankAndSort()` API for cross-encoder reranking. Returns documents sorted by relevance score (0.0–1.0).
+
+### Remote reranker
+
+When `QMD_RERANK_BACKEND=remote`, reranking uses a listwise LLM prompt instead of the local cross-encoder. The model receives batches of up to 15 chunks with their file paths and a scoring rubric, and returns a JSON array of 0.0–1.0 scores. Scores are min-max normalized within each batch. Any chat-completions model works; `openrouter/deepseek/deepseek-v3.2` and `openrouter/openai/gpt-4o-mini` both give a good balance of quality and cost.
 
 ### Qwen3 (Query Expansion)
 

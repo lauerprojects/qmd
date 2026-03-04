@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [1.2.0-rem.1] - 2026-03-04
+
+Fork release adding remote API support. Embeddings and query expansion can now be offloaded to any OpenAI-compatible API (OpenRouter, OpenAI, Ollama, etc.) via environment variables, with local node-llama-cpp remaining the default for all operations.
+
+### Changes
+
+- **Remote LLM backend** (`src/remote-llm.ts`): new `RemoteLLM` class implementing the full `LLM` interface against any OpenAI-compatible API. Supports embeddings (`/embeddings`), chat generation, and query expansion. Reranking falls back to original document order (not supported by standard APIs).
+- **Hybrid routing** (`src/hybrid-llm.ts`): new `HybridLLM` class that routes each operation (`embed`, `generate`, `rerank`, `tokenize`) independently to either the local or remote backend based on configuration.
+- **Per-operation backend env vars**: `QMD_EMBED_BACKEND`, `QMD_GENERATE_BACKEND`, `QMD_RERANK_BACKEND`, `QMD_TOKENIZE_BACKEND` — each accepts `local` or `remote`. Defaults to `remote` for embed and generate when an API key is set; always `local` for rerank and tokenize.
+- **Remote model env vars**: `QMD_REMOTE_API_KEY`, `QMD_REMOTE_BASE_URL` (default: OpenRouter), `QMD_REMOTE_EMBED_MODEL`, `QMD_REMOTE_GENERATE_MODEL`, `QMD_REMOTE_RERANK_MODEL`, `QMD_REMOTE_TIMEOUT`.
+- **`getDefaultLLM()` always returns `HybridLLM`**: wraps local `LlamaCpp` and optional `RemoteLLM`; falls back to local silently when no API key is set.
+- **LLM type system** (`src/llm-types.ts`): extracted shared types (`LLM`, `EmbedOptions`, `EmbeddingResult`, `GenerateResult`, `RerankResult`, etc.) into a standalone module so `RemoteLLM` and `HybridLLM` can implement the interface without circular imports.
+- **`searchVec` model parameter**: changed from `string` to `string | undefined` so call sites can omit it and let the active backend use its configured model, rather than hardcoding the local HuggingFace URI and sending it to remote APIs.
+- **README**: new "Remote LLM & Embeddings" section with quick-setup `.env` example, per-operation routing table, and ready-to-copy configs for OpenRouter, OpenAI direct, and Ollama.
+
+### Fixes
+
+- `tokenize`/`detokenize` interface signatures widened to `readonly any[]` to match `LlamaCpp`'s native `readonly Token[]` return type (was a TypeScript build error).
+- `RemoteLLM.generate`: added `timestamp: Date.now()` to `UserMessage` (required field by `pi-ai` types).
+- `RemoteLLM.resolvePiModel`: fixed `Model` generic (`Model<any>`) and non-null assertion on `parts[0]`.
+- `llm.ts` JSDoc: moved misplaced class JSDoc onto `LlamaCpp` class; corrected `contextSize 1024` comment to `2048` to match `RERANK_CONTEXT_SIZE`; removed dead `// // // //` commented-out import line; fixed inaccurate "dynamic import pattern" comment in `touchActivity`.
+
 ## [1.1.0] - 2026-02-20
 
 QMD now speaks in **query documents** — structured multi-line queries where every line is typed (`lex:`, `vec:`, `hyde:`), combining keyword precision with semantic recall. A single plain query still works exactly as before (it's treated as an implicit `expand:` and auto-expanded by the LLM). Lex now supports quoted phrases and negation (`"C++ performance" -sports -athlete`), making intent-aware disambiguation practical. The formal query grammar is documented in `docs/SYNTAX.md`.

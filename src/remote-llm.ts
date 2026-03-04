@@ -296,11 +296,13 @@ JSON Response:`;
       return { results: [], model: this.rerankModel || this.generateModel };
     }
 
+    const debugRerank = !!process.env.QMD_DEBUG_RERANK;
     const modelStr = options.model || this.rerankModel || this.generateModel;
 
     // Listwise reranking: score all candidates in batches with a single prompt per batch.
     // Batching avoids context window overflow on models with smaller windows.
     const BATCH_SIZE = 15;
+    const chunkChars = options.chunkChars ?? parseInt(process.env.QMD_RERANK_CHUNK_CHARS || "1200", 10);
     const allScores: number[] = new Array(documents.length).fill(0.5);
 
     try {
@@ -308,37 +310,69 @@ JSON Response:`;
         const batch = documents.slice(batchStart, batchStart + BATCH_SIZE);
 
         const chunksSection = batch
-          .map((doc, i) => `[${i}] ${doc.text.slice(0, 1200)}`)
+          .map((doc, i) => {
+            const path = doc.file.replace(/^qmd:\/\/[^/]+\//, '');
+            return `[${batchStart + i + 1}] (${path})\n${doc.text.slice(0, chunkChars)}`;
+          })
           .join('\n\n');
 
-        const prompt = `You are a search result reranker. Given a query and a list of document chunks, score each chunk's relevance to the query on a scale of 0.0 to 1.0.
+        const exampleScores = batch.length >= 3
+          ? `[0.9, 0.1, 0.5${batch.length > 3 ? ', ...' : ''}]`
+          : `[0.9${batch.length > 1 ? ', 0.1' : ''}]`;
 
-Return ONLY a JSON array of numbers, one per chunk, in the same order as the input.
-Use 0.0 for completely irrelevant, 1.0 for perfectly relevant. No explanation, no markdown.
+        const prompt = `Score each document chunk's relevance to the query. Consider:
+- Direct mentions of the query subject (names, keywords, synonyms)
+- Topical relevance (is the chunk about the same subject?)
+- File path (a file named after the query subject is likely relevant)
+
+Scoring rubric:
+  0.9-1.0  Directly about the query subject, answers it
+  0.6-0.8  Clearly relevant, mentions the subject with context
+  0.3-0.5  Tangentially related or only brief mention
+  0.0-0.2  Unrelated to the query
 
 Query: ${query}
 
-Chunks:
 ${chunksSection}
 
-Scores:`;
+Respond with ONLY a JSON array of exactly ${batch.length} scores, e.g. ${exampleScores}`;
+
+        // Budget: each score is at most 6 chars ("0.99, "), plus brackets and a small buffer
+        const maxTokens = batch.length * 10 + 50;
+
+        if (debugRerank) {
+          process.stderr.write(`[rerank:llm] batch ${batchStart / BATCH_SIZE + 1}: ${batch.length} docs, maxTokens=${maxTokens}\n`);
+          process.stderr.write(`[rerank:llm] prompt:\n${prompt}\n`);
+        }
 
         const result = await this.generate(prompt, {
           model: modelStr,
           temperature: 0,
-          maxTokens: batch.length * 8 + 20, // ~"0.95, " per entry plus brackets
+          maxTokens,
         });
 
+        if (debugRerank) {
+          process.stderr.write(`[rerank:llm] raw response: ${JSON.stringify(result?.text ?? null)}\n`);
+        }
+
         if (!result?.text) {
-          // Leave this batch at default 0.5 scores
+          if (debugRerank) process.stderr.write(`[rerank:llm] empty response — leaving batch at 0.5\n`);
           continue;
         }
 
         let jsonStr = result.text.trim();
         if (jsonStr.startsWith('```')) jsonStr = jsonStr.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
 
-        const parsed = JSON.parse(jsonStr);
+        let parsed: any;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch (parseErr) {
+          if (debugRerank) process.stderr.write(`[rerank:llm] JSON parse failed: ${parseErr}\n`);
+          continue;
+        }
+
         if (!Array.isArray(parsed) || parsed.length !== batch.length) {
+          if (debugRerank) process.stderr.write(`[rerank:llm] array length mismatch: got ${Array.isArray(parsed) ? parsed.length : typeof parsed}, expected ${batch.length}\n`);
           continue;
         }
 
@@ -353,6 +387,10 @@ Scores:`;
           // If all scores are identical, range is 0 — keep raw value clamped to [0,1]
           const normalized = range > 0 ? (raw - min) / range : Math.min(1, Math.max(0, raw));
           allScores[batchStart + i] = normalized;
+        }
+
+        if (debugRerank) {
+          process.stderr.write(`[rerank:llm] parsed scores: ${nums.map((n: number) => n.toFixed(3)).join(', ')}\n`);
         }
       }
     } catch (error) {

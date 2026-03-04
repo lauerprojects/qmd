@@ -77,6 +77,8 @@ export type GenerateOptions = {
  */
 export type RerankOptions = {
   model?: string;
+  /** Max characters of each chunk sent to the reranker (remote only). Default: 1200. Override with QMD_RERANK_CHUNK_CHARS. */
+  chunkChars?: number;
 };
 
 /**

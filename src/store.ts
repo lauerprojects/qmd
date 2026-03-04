@@ -2334,6 +2334,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 // =============================================================================
 
 export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database): Promise<{ file: string; score: number }[]> {
+  const debugRerank = !!process.env.QMD_DEBUG_RERANK;
   const cachedResults: Map<string, number> = new Map();
   const uncachedDocs: RerankDocument[] = [];
 
@@ -2350,6 +2351,16 @@ export async function rerank(query: string, documents: { file: string; text: str
     }
   }
 
+  if (debugRerank) {
+    process.stderr.write(`[rerank] query: "${query}"\n`);
+    process.stderr.write(`[rerank] ${documents.length} docs (${documents.length - uncachedDocs.length} cached, ${uncachedDocs.length} uncached)\n`);
+    process.stderr.write(`[rerank] PRE-RERANK order:\n`);
+    documents.forEach((doc, i) => {
+      const cached = cachedResults.has(doc.file) ? ` (cached: ${cachedResults.get(doc.file)!.toFixed(3)})` : "";
+      process.stderr.write(`  ${String(i + 1).padStart(2)}. ${doc.file}${cached}\n`);
+    });
+  }
+
   // Rerank uncached documents. Don't pass model in options — each backend
   // (local LlamaCpp, remote LLM) uses its own configured model. Passing the
   // local DEFAULT_RERANK_MODEL string to a remote backend would cause it to
@@ -2357,6 +2368,10 @@ export async function rerank(query: string, documents: { file: string; text: str
   if (uncachedDocs.length > 0) {
     const llm = getDefaultLLM();
     const rerankResult = await llm.rerank(query, uncachedDocs, {});
+
+    if (debugRerank) {
+      process.stderr.write(`[rerank] model used: ${rerankResult.model}\n`);
+    }
 
     // Cache results — use original doc.text for cache key (result.file lacks chunk text)
     const textByFile = new Map(documents.map(d => [d.file, d.text]));
@@ -2368,9 +2383,20 @@ export async function rerank(query: string, documents: { file: string; text: str
   }
 
   // Return all results sorted by score
-  return documents
+  const sorted = documents
     .map(doc => ({ file: doc.file, score: cachedResults.get(doc.file) || 0 }))
     .sort((a, b) => b.score - a.score);
+
+  if (debugRerank) {
+    process.stderr.write(`[rerank] POST-RERANK order:\n`);
+    sorted.forEach((r, i) => {
+      const preRank = documents.findIndex(d => d.file === r.file) + 1;
+      const moved = i + 1 !== preRank ? ` (was #${preRank})` : "";
+      process.stderr.write(`  ${String(i + 1).padStart(2)}. ${r.file}  score=${r.score.toFixed(3)}${moved}\n`);
+    });
+  }
+
+  return sorted;
 }
 
 // =============================================================================

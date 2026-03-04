@@ -177,10 +177,11 @@ export class RemoteLLM implements LLM {
 
   async generate(prompt: string, options: GenerateOptions = {}): Promise<GenerateResult | null> {
     const modelStr = options.model || this.generateModel;
-    process.stderr.write(`[generate] model: ${modelStr} baseURL: ${this.baseURL}\n`);
+    const debugLines: string[] = [];
+    debugLines.push(`[generate] model: ${modelStr} baseURL: ${this.baseURL}`);
     try {
       const model = this.resolvePiModel(modelStr);
-      process.stderr.write(`[generate] resolved → api: ${model.api}  provider: ${model.provider}  reasoning: ${(model as any).reasoning ?? '?'}  baseUrl: ${model.baseUrl}\n`);
+      debugLines.push(`[generate] resolved → api: ${model.api}  provider: ${model.provider}  reasoning: ${(model as any).reasoning ?? '?'}  baseUrl: ${model.baseUrl}`);
 
       const context: Context = {
         messages: [{ role: 'user', content: prompt, timestamp: Date.now() }]
@@ -192,11 +193,11 @@ export class RemoteLLM implements LLM {
         temperature: options.temperature
       });
 
-      process.stderr.write(`[generate] stopReason: ${response.stopReason}\n`);
-      process.stderr.write(`[generate] errorMessage: ${response.errorMessage ?? '(none)'}\n`);
-      process.stderr.write(`[generate] provider: ${response.provider}  api: ${response.api}  model: ${response.model}\n`);
-      process.stderr.write(`[generate] usage: ${JSON.stringify(response.usage)}\n`);
-      process.stderr.write(`[generate] content block types: ${response.content.map(b => b.type).join(', ') || '(none)'}\n`);
+      debugLines.push(`[generate] stopReason: ${response.stopReason}`);
+      debugLines.push(`[generate] errorMessage: ${response.errorMessage ?? '(none)'}`);
+      debugLines.push(`[generate] provider: ${response.provider}  api: ${response.api}  model: ${response.model}`);
+      debugLines.push(`[generate] usage: ${JSON.stringify(response.usage)}`);
+      debugLines.push(`[generate] content block types: ${response.content.map(b => b.type).join(', ') || '(none)'}`);
 
       // Extract text content — skip thinking blocks (reasoning model internal monologue)
       const text = response.content
@@ -204,12 +205,18 @@ export class RemoteLLM implements LLM {
         .map(block => block.text)
         .join('');
 
+      if (!text) {
+        debugLines.push(`[generate] warning: empty text output`);
+        process.stderr.write(debugLines.join('\n') + '\n');
+      }
+
       return {
         text,
         model: modelStr,
         done: true
       };
     } catch (error) {
+      process.stderr.write(debugLines.join('\n') + '\n');
       console.error("Remote generation error:", error);
       return null;
     }
@@ -238,19 +245,16 @@ Query: ${query}
 
 JSON Response:`;
 
+    let result: Awaited<ReturnType<typeof this.generate>> = null;
     try {
-      const result = await this.generate(prompt, {
+      result = await this.generate(prompt, {
         temperature: 0.7,
         maxTokens: 600
       });
 
-      if (!result) {
-        process.stderr.write(`[expandQuery] generate() returned null — check [generate] error above\n`);
-        return [];
-      }
+      if (!result) return [];
 
       let jsonStr = result.text.trim();
-      process.stderr.write(`[expandQuery] prompt:\n${prompt}\n\n[expandQuery] raw response:\n${jsonStr}\n\n`);
 
       // Remove markdown code blocks if present
       if (jsonStr.startsWith("```json")) {
@@ -280,7 +284,7 @@ JSON Response:`;
 
       return includeLexical ? queryables : queryables.filter(q => q.type !== 'lex');
     } catch (error) {
-      console.error("Remote query expansion failed:", error);
+      console.error(`Remote query expansion failed — prompt:\n${prompt}\n\nraw response:\n${result?.text ?? '(null)'}\n\nerror:`, error);
       const fallback: Queryable[] = [{ type: 'vec', text: query }];
       if (includeLexical) fallback.unshift({ type: 'lex', text: query });
       return fallback;

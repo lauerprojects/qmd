@@ -79,11 +79,11 @@ export class HybridLLM implements LLM {
     return this.getBackend(this.config.rerankBackend).rerank(query, documents, options);
   }
 
-  async tokenize(text: string): Promise<any[]> {
+  async tokenize(text: string): Promise<readonly any[]> {
     return this.getBackend(this.config.tokenizeBackend).tokenize(text);
   }
 
-  async detokenize(tokens: any[]): Promise<string> {
+  async detokenize(tokens: readonly any[]): Promise<string> {
     return this.getBackend(this.config.tokenizeBackend).detokenize(tokens);
   }
 

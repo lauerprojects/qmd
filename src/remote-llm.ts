@@ -129,13 +129,13 @@ export class RemoteLLM implements LLM {
    * Resolve the pi-ai model from the configured string.
    * Handles "provider/modelId" or defaults to "openai/modelId".
    */
-  private resolvePiModel(modelStr: string): Model {
+  private resolvePiModel(modelStr: string): Model<any> {
     let provider = 'openai';
     let modelId = modelStr;
 
     if (modelStr.includes('/')) {
       const parts = modelStr.split('/');
-      provider = parts[0];
+      provider = parts[0]!;
       modelId = parts.slice(1).join('/');
     }
 
@@ -176,12 +176,14 @@ export class RemoteLLM implements LLM {
   }
 
   async generate(prompt: string, options: GenerateOptions = {}): Promise<GenerateResult | null> {
+    const modelStr = options.model || this.generateModel;
+    process.stderr.write(`[generate] model: ${modelStr} baseURL: ${this.baseURL}\n`);
     try {
-      const modelStr = options.model || this.generateModel;
       const model = this.resolvePiModel(modelStr);
+      process.stderr.write(`[generate] resolved → api: ${model.api}  provider: ${model.provider}  reasoning: ${(model as any).reasoning ?? '?'}  baseUrl: ${model.baseUrl}\n`);
 
       const context: Context = {
-        messages: [{ role: 'user', content: prompt }]
+        messages: [{ role: 'user', content: prompt, timestamp: Date.now() }]
       };
 
       const response = await complete(model, context, {
@@ -190,9 +192,15 @@ export class RemoteLLM implements LLM {
         temperature: options.temperature
       });
 
-      // Extract text content
+      process.stderr.write(`[generate] stopReason: ${response.stopReason}\n`);
+      process.stderr.write(`[generate] errorMessage: ${response.errorMessage ?? '(none)'}\n`);
+      process.stderr.write(`[generate] provider: ${response.provider}  api: ${response.api}  model: ${response.model}\n`);
+      process.stderr.write(`[generate] usage: ${JSON.stringify(response.usage)}\n`);
+      process.stderr.write(`[generate] content block types: ${response.content.map(b => b.type).join(', ') || '(none)'}\n`);
+
+      // Extract text content — skip thinking blocks (reasoning model internal monologue)
       const text = response.content
-        .filter(block => block.type === 'text')
+        .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
         .map(block => block.text)
         .join('');
 
@@ -236,9 +244,14 @@ JSON Response:`;
         maxTokens: 600
       });
 
-      if (!result) return [];
+      if (!result) {
+        process.stderr.write(`[expandQuery] generate() returned null — check [generate] error above\n`);
+        return [];
+      }
 
       let jsonStr = result.text.trim();
+      process.stderr.write(`[expandQuery] prompt:\n${prompt}\n\n[expandQuery] raw response:\n${jsonStr}\n\n`);
+
       // Remove markdown code blocks if present
       if (jsonStr.startsWith("```json")) {
         jsonStr = jsonStr.slice(7);
@@ -249,14 +262,15 @@ JSON Response:`;
       if (jsonStr.endsWith("```")) {
         jsonStr = jsonStr.slice(0, -3);
       }
+      jsonStr = jsonStr.trim();
 
       const parsed = JSON.parse(jsonStr);
       if (!Array.isArray(parsed)) return [];
 
       const queryables: Queryable[] = parsed
-        .filter((item: any) => 
-          item.type && 
-          item.text && 
+        .filter((item: any) =>
+          item.type &&
+          item.text &&
           ['lex', 'vec', 'hyde'].includes(item.type)
         )
         .map((item: any) => ({

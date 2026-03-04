@@ -808,7 +808,7 @@ export type Store = {
 
   // Search
   searchFTS: (query: string, limit?: number, collectionName?: string) => SearchResult[];
-  searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => Promise<SearchResult[]>;
+  searchVec: (query: string, model: string | undefined, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
   expandQuery: (query: string, model?: string) => Promise<ExpandedQuery[]>;
@@ -891,7 +891,7 @@ export function createStore(dbPath?: string): Store {
 
     // Search
     searchFTS: (query: string, limit?: number, collectionName?: string) => searchFTS(db, query, limit, collectionName),
-    searchVec: (query: string, model: string, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding),
+    searchVec: (query: string, model: string | undefined, limit?: number, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding),
 
     // Query expansion & reranking
     expandQuery: (query: string, model?: string) => expandQuery(query, model, db),
@@ -2152,7 +2152,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 // Vector Search
 // =============================================================================
 
-export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]): Promise<SearchResult[]> {
+export async function searchVec(db: Database, query: string, model: string | undefined, limit: number = 20, collectionName?: string, session?: ILLMSession, precomputedEmbedding?: number[]): Promise<SearchResult[]> {
   const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!tableExists) return [];
 
@@ -2242,7 +2242,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
 // Embeddings
 // =============================================================================
 
-async function getEmbedding(text: string, model: string, isQuery: boolean, session?: ILLMSession): Promise<number[] | null> {
+async function getEmbedding(text: string, model: string | undefined, isQuery: boolean, session?: ILLMSession): Promise<number[] | null> {
   // Format text using the appropriate prompt template
   const formattedText = isQuery ? formatQueryForEmbedding(text) : formatDocForEmbedding(text);
   const result = session
@@ -2999,7 +2999,7 @@ export async function hybridQuery(
       if (!embedding) continue;
 
       const vecResults = await store.searchVec(
-        vecQueries[i]!.text, DEFAULT_EMBED_MODEL, 20, collection,
+        vecQueries[i]!.text, undefined, 20, collection,
         undefined, embedding
       );
       if (vecResults.length > 0) {
@@ -3145,7 +3145,7 @@ export async function vectorSearchQuery(
   const queryTexts = [query, ...vecExpanded.map(q => q.text)];
   const allResults = new Map<string, VectorSearchResult>();
   for (const q of queryTexts) {
-    const vecResults = await store.searchVec(q, DEFAULT_EMBED_MODEL, limit, collection);
+    const vecResults = await store.searchVec(q, undefined, limit, collection);
     for (const r of vecResults) {
       const existing = allResults.get(r.filepath);
       if (!existing || r.score > existing.score) {
@@ -3288,7 +3288,7 @@ export async function structuredSearch(
 
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
-            vecSearches[i]!.query, DEFAULT_EMBED_MODEL, 20, coll,
+            vecSearches[i]!.query, undefined, 20, coll,
             undefined, embedding
           );
           if (vecResults.length > 0) {

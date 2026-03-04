@@ -144,12 +144,12 @@ export interface LLM {
   /**
    * Tokenize text
    */
-  tokenize(text: string): Promise<any[]>;
+  tokenize(text: string): Promise<readonly any[]>;
 
   /**
    * Detokenize tokens
    */
-  detokenize(tokens: any[]): Promise<string>;
+  detokenize(tokens: readonly any[]): Promise<string>;
 
   /**
    * Dispose of resources

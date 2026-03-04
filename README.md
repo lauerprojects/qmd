@@ -495,11 +495,11 @@ By default QMD runs everything locally via node-llama-cpp. You can offload embed
 Create a `.env` file in your working directory (or export the variables in your shell):
 
 ```sh
-# Required: your API key
-QMD_REMOTE_API_KEY="sk-..."
+# Required: your API key (get one at https://openrouter.ai/keys)
+QMD_REMOTE_API_KEY="sk-or-v1-..."
 
-# Optional: base URL (defaults to OpenRouter)
-# QMD_REMOTE_BASE_URL="https://openrouter.ai/api/v1"
+# Base URL — defaults to OpenRouter; override for other providers
+QMD_REMOTE_BASE_URL="https://openrouter.ai/api/v1"
 # QMD_REMOTE_BASE_URL="https://api.openai.com/v1"
 # QMD_REMOTE_BASE_URL="http://localhost:11434/v1"   # Ollama
 
@@ -568,7 +568,8 @@ This shows:
 
 **Fully remote** — all operations via API, no local models needed:
 ```sh
-QMD_REMOTE_API_KEY="sk-..."
+QMD_REMOTE_API_KEY="sk-or-v1-..."
+QMD_REMOTE_BASE_URL="https://openrouter.ai/api/v1"
 QMD_REMOTE_EMBED_MODEL="openai/text-embedding-3-small"
 QMD_REMOTE_GENERATE_MODEL="openrouter/openai/gpt-4o-mini"
 QMD_REMOTE_RERANK_MODEL="openrouter/deepseek/deepseek-v3.2"
@@ -579,7 +580,8 @@ QMD_RERANK_BACKEND="remote"
 
 **Fastest indexing** — remote embeddings, local reranking:
 ```sh
-QMD_REMOTE_API_KEY="sk-..."
+QMD_REMOTE_API_KEY="sk-or-v1-..."
+QMD_REMOTE_BASE_URL="https://openrouter.ai/api/v1"
 QMD_REMOTE_EMBED_MODEL="openai/text-embedding-3-small"
 QMD_EMBED_BACKEND="remote"
 QMD_GENERATE_BACKEND="local"
@@ -595,7 +597,7 @@ qmd query "my search"
 
 **OpenAI directly** (instead of OpenRouter):
 ```sh
-QMD_REMOTE_API_KEY="sk-..."
+QMD_REMOTE_API_KEY="sk-..."   # OpenAI key format
 QMD_REMOTE_BASE_URL="https://api.openai.com/v1"
 QMD_REMOTE_EMBED_MODEL="text-embedding-3-small"
 QMD_REMOTE_GENERATE_MODEL="openai/gpt-4o-mini"

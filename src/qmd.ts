@@ -1596,7 +1596,6 @@ async function vectorIndex(model: string = DEFAULT_EMBED_MODEL, force: boolean =
   if (multiChunkDocs > 0) {
     console.log(`${c.dim}${multiChunkDocs} documents split into multiple chunks${c.reset}`);
   }
-  console.log(`${c.dim}Model: ${model}${c.reset}\n`);
 
   // Hide cursor during embedding
   cursor.hide();
@@ -1615,6 +1614,7 @@ async function vectorIndex(model: string = DEFAULT_EMBED_MODEL, force: boolean =
     if (!firstResult) {
       throw new Error("Failed to get embedding dimensions from first chunk");
     }
+    console.log(`${c.dim}Model: ${firstResult.model}${c.reset}\n`);
     ensureVecTable(db, firstResult.embedding.length);
 
     let chunksEmbedded = 0, errors = 0, bytesProcessed = 0;

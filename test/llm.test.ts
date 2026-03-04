@@ -10,26 +10,31 @@
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import {
   LlamaCpp,
-  getDefaultLlamaCpp,
-  disposeDefaultLlamaCpp,
+  getDefaultLLM,
+  disposeDefaultLLM,
   withLLMSession,
   canUnloadLLM,
   SessionReleasedError,
   type RerankDocument,
   type ILLMSession,
 } from "../src/llm.js";
+import { HybridLLM } from "../src/hybrid-llm.js";
 
 // =============================================================================
 // Singleton Tests (no model loading required)
 // =============================================================================
 
-describe("Default LlamaCpp Singleton", () => {
-  // Test singleton behavior without resetting to avoid orphan instances
-  test("getDefaultLlamaCpp returns same instance on subsequent calls", () => {
-    const llm1 = getDefaultLlamaCpp();
-    const llm2 = getDefaultLlamaCpp();
+describe("Default LLM Singleton", () => {
+  test("getDefaultLLM returns same instance on subsequent calls", () => {
+    const llm1 = getDefaultLLM();
+    const llm2 = getDefaultLLM();
     expect(llm1).toBe(llm2);
-    expect(llm1).toBeInstanceOf(LlamaCpp);
+  });
+
+  test("getDefaultLLM returns HybridLLM when remote is configured", () => {
+    // With QMD_REMOTE_API_KEY set, default is HybridLLM wrapping local + remote
+    const llm = getDefaultLLM();
+    expect(llm).toBeInstanceOf(HybridLLM);
   });
 });
 
@@ -39,7 +44,7 @@ describe("Default LlamaCpp Singleton", () => {
 
 describe("LlamaCpp.modelExists", () => {
   test("returns exists:true for HuggingFace model URIs", async () => {
-    const llm = getDefaultLlamaCpp();
+    const llm = new LlamaCpp();
     const result = await llm.modelExists("hf:org/repo/model.gguf");
 
     expect(result.exists).toBe(true);
@@ -47,7 +52,7 @@ describe("LlamaCpp.modelExists", () => {
   });
 
   test("returns exists:false for non-existent local paths", async () => {
-    const llm = getDefaultLlamaCpp();
+    const llm = new LlamaCpp();
     const result = await llm.modelExists("/nonexistent/path/model.gguf");
 
     expect(result.exists).toBe(false);
@@ -60,12 +65,13 @@ describe("LlamaCpp.modelExists", () => {
 // =============================================================================
 
 describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
-  // Use the singleton to avoid multiple Metal contexts
-  const llm = getDefaultLlamaCpp();
+  // Construct a dedicated LlamaCpp instance for local model tests.
+  // getDefaultLLM() returns HybridLLM when remote is configured, so we
+  // instantiate directly to test the local backend in isolation.
+  const llm = new LlamaCpp();
 
   afterAll(async () => {
-    // Ensure native resources are released to avoid ggml-metal asserts on process exit.
-    await disposeDefaultLlamaCpp();
+    await llm.dispose();
   });
 
   describe("embed", () => {

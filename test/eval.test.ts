@@ -36,7 +36,7 @@ import {
   DEFAULT_EMBED_MODEL,
   type RankedResult,
 } from "../src/store";
-import { getDefaultLlamaCpp, formatDocForEmbedding, disposeDefaultLlamaCpp } from "../src/llm";
+import { LlamaCpp, formatDocForEmbedding } from "../src/llm";
 
 // Eval queries with expected documents
 const evalQueries: {
@@ -160,6 +160,7 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
   let store: ReturnType<typeof createStore>;
   let db: Database;
   let hasEmbeddings = false;
+  let llm: LlamaCpp;
 
   beforeAll(async () => {
     store = createStore();
@@ -178,8 +179,8 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
       }
     }
 
-    // Generate embeddings for test documents
-    const llm = getDefaultLlamaCpp();
+    // Use local LlamaCpp directly — getDefaultLLM() returns HybridLLM when remote is configured.
+    llm = new LlamaCpp();
     store.ensureVecTable(768); // embeddinggemma uses 768 dimensions
 
     const evalDocsDir = join(dirname(fileURLToPath(import.meta.url)), "eval-docs");
@@ -208,12 +209,10 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
     hasEmbeddings = true;
   }, 120000); // 2 minute timeout for embedding generation
 
-  afterAll(() => {
+  afterAll(async () => {
     store.close();
+    if (llm) await llm.dispose();
   });
-
-  // Note: Don't dispose here - Hybrid tests also use llama.
-  // Dispose happens in the global afterAll.
 
   test("easy queries: ≥60% Hit@3 (vector should match keywords too)", async () => {
     if (!hasEmbeddings) return; // Skip if embedding failed
@@ -410,7 +409,5 @@ describe.skipIf(!!process.env.CI)("Hybrid Search (RRF)", () => {
 // =============================================================================
 
 afterAll(async () => {
-  // Ensure native resources are released to avoid ggml-metal asserts on process exit.
-  await disposeDefaultLlamaCpp();
   rmSync(tempDir, { recursive: true, force: true });
 });

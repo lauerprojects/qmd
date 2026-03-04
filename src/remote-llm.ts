@@ -292,24 +292,82 @@ JSON Response:`;
   }
 
   async rerank(query: string, documents: RerankDocument[], options: RerankOptions = {}): Promise<RerankResult> {
-    // Most standard OpenAI-compatible APIs don't have a rerank endpoint.
-    // Some providers like Cohere do, but it requires a different API structure.
-    // For now, we'll log a warning and return documents in original order (or maybe simple Jaccard/keyword sort?)
-    // Or we could use the LLM to rerank (listwise ranking), but that's complex and token-heavy.
-    
-    // If the user configured a specific rerank model that implies they have a provider that supports it,
-    // we might try a specific endpoint. But for "generic" OpenAI compat, we can't assume.
-    
-    console.warn("Remote reranking is not fully implemented. Returning documents in original order.");
-    
-    return {
-      results: documents.map((doc, index) => ({
-        file: doc.file,
-        score: 1.0 - (index * 0.001), // Dummy score preserving order
-        index
-      })),
-      model: "noop-reranker"
-    };
+    if (documents.length === 0) {
+      return { results: [], model: this.rerankModel || this.generateModel };
+    }
+
+    const modelStr = options.model || this.rerankModel || this.generateModel;
+
+    // Listwise reranking: score all candidates in batches with a single prompt per batch.
+    // Batching avoids context window overflow on models with smaller windows.
+    const BATCH_SIZE = 15;
+    const allScores: number[] = new Array(documents.length).fill(0.5);
+
+    try {
+      for (let batchStart = 0; batchStart < documents.length; batchStart += BATCH_SIZE) {
+        const batch = documents.slice(batchStart, batchStart + BATCH_SIZE);
+
+        const chunksSection = batch
+          .map((doc, i) => `[${i}] ${doc.text.slice(0, 1200)}`)
+          .join('\n\n');
+
+        const prompt = `You are a search result reranker. Given a query and a list of document chunks, score each chunk's relevance to the query on a scale of 0.0 to 1.0.
+
+Return ONLY a JSON array of numbers, one per chunk, in the same order as the input.
+Use 0.0 for completely irrelevant, 1.0 for perfectly relevant. No explanation, no markdown.
+
+Query: ${query}
+
+Chunks:
+${chunksSection}
+
+Scores:`;
+
+        const result = await this.generate(prompt, {
+          model: modelStr,
+          temperature: 0,
+          maxTokens: batch.length * 8 + 20, // ~"0.95, " per entry plus brackets
+        });
+
+        if (!result?.text) {
+          // Leave this batch at default 0.5 scores
+          continue;
+        }
+
+        let jsonStr = result.text.trim();
+        if (jsonStr.startsWith('```')) jsonStr = jsonStr.replace(/^```[a-z]*\n?/, '').replace(/```$/, '').trim();
+
+        const parsed = JSON.parse(jsonStr);
+        if (!Array.isArray(parsed) || parsed.length !== batch.length) {
+          continue;
+        }
+
+        // Normalize scores within this batch to 0–1 (handles models that use different scales)
+        const nums = parsed.map((v: any) => typeof v === 'number' ? v : parseFloat(v));
+        const min = Math.min(...nums);
+        const max = Math.max(...nums);
+        const range = max - min;
+
+        for (let i = 0; i < batch.length; i++) {
+          const raw = nums[i] ?? 0.5;
+          // If all scores are identical, range is 0 — keep raw value clamped to [0,1]
+          const normalized = range > 0 ? (raw - min) / range : Math.min(1, Math.max(0, raw));
+          allScores[batchStart + i] = normalized;
+        }
+      }
+    } catch (error) {
+      console.error("Remote reranking failed, returning original order:", error);
+      return {
+        results: documents.map((doc, index) => ({ file: doc.file, score: 0.5, index })),
+        model: modelStr,
+      };
+    }
+
+    const results = documents
+      .map((doc, index) => ({ file: doc.file, score: allScores[index] ?? 0.5, index }))
+      .sort((a, b) => b.score - a.score);
+
+    return { results, model: modelStr };
   }
 
   async getDeviceInfo(): Promise<{

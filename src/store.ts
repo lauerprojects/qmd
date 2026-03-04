@@ -2350,10 +2350,13 @@ export async function rerank(query: string, documents: { file: string; text: str
     }
   }
 
-  // Rerank uncached documents using LlamaCpp
+  // Rerank uncached documents. Don't pass model in options — each backend
+  // (local LlamaCpp, remote LLM) uses its own configured model. Passing the
+  // local DEFAULT_RERANK_MODEL string to a remote backend would cause it to
+  // try to resolve an Ollama-style model name against the remote API.
   if (uncachedDocs.length > 0) {
     const llm = getDefaultLLM();
-    const rerankResult = await llm.rerank(query, uncachedDocs, { model });
+    const rerankResult = await llm.rerank(query, uncachedDocs, {});
 
     // Cache results — use original doc.text for cache key (result.file lacks chunk text)
     const textByFile = new Map(documents.map(d => [d.file, d.text]));

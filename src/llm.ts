@@ -1329,17 +1329,15 @@ export function getDefaultLLM(): LLM {
       });
     }
 
-    // Determine backends based on env vars or defaults
-    // If remote is available:
-    //   Embed: Remote
-    //   Generate: Remote
-    //   Rerank: Local (default per user request)
-    //   Tokenize: Local (default per user request)
+    // Determine backends based on env vars or defaults.
+    // Rerank defaults to remote only when QMD_REMOTE_RERANK_MODEL is explicitly set;
+    // otherwise local (the Qwen3 cross-encoder is generally better quality).
     const hasRemote = !!remote;
+    const hasRemoteRerankModel = !!process.env.QMD_REMOTE_RERANK_MODEL;
 
     const embedBackend = (process.env.QMD_EMBED_BACKEND as LLMBackend) || (hasRemote ? 'remote' : 'local');
     const generateBackend = (process.env.QMD_GENERATE_BACKEND as LLMBackend) || (hasRemote ? 'remote' : 'local');
-    const rerankBackend = (process.env.QMD_RERANK_BACKEND as LLMBackend) || 'local';
+    const rerankBackend = (process.env.QMD_RERANK_BACKEND as LLMBackend) || (hasRemoteRerankModel ? 'remote' : 'local');
     const tokenizeBackend = (process.env.QMD_TOKENIZE_BACKEND as LLMBackend) || 'local';
 
     defaultLLM = new HybridLLM(local, remote, {

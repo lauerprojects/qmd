@@ -1603,22 +1603,11 @@ async function vectorIndex(model: string = DEFAULT_EMBED_MODEL, force: boolean =
   // Wrap all LLM embedding operations in a session for lifecycle management
   // Use 30 minute timeout for large collections
   await withLLMSession(async (session) => {
-    // Get embedding dimensions from first chunk
     progress.indeterminate();
-    const firstChunk = allChunks[0];
-    if (!firstChunk) {
-      throw new Error("No chunks available to embed");
-    }
-    const firstText = formatDocForEmbedding(firstChunk.text, firstChunk.title);
-    const firstResult = await session.embed(firstText);
-    if (!firstResult) {
-      throw new Error("Failed to get embedding dimensions from first chunk");
-    }
-    console.log(`${c.dim}Model: ${firstResult.model}${c.reset}\n`);
-    ensureVecTable(db, firstResult.embedding.length);
 
     let chunksEmbedded = 0, errors = 0, bytesProcessed = 0;
     const startTime = Date.now();
+    let vecTableReady = false;
 
     // Batch embedding for better throughput
     // Process in batches of 32 to balance memory usage and efficiency
@@ -1634,6 +1623,15 @@ async function vectorIndex(model: string = DEFAULT_EMBED_MODEL, force: boolean =
       try {
         // Batch embed all texts at once
         const embeddings = await session.embedBatch(texts);
+
+        // On first successful batch, set up the vector table and log the model
+        if (!vecTableReady) {
+          const firstEmbedding = embeddings.find(e => e !== null);
+          if (!firstEmbedding) throw new Error("Failed to get embedding dimensions from first batch");
+          console.log(`${c.dim}Model: ${firstEmbedding.model}${c.reset}\n`);
+          ensureVecTable(db, firstEmbedding.embedding.length);
+          vecTableReady = true;
+        }
 
         // Insert each embedding
         for (let i = 0; i < batch.length; i++) {
@@ -1656,6 +1654,11 @@ async function vectorIndex(model: string = DEFAULT_EMBED_MODEL, force: boolean =
             const text = formatDocForEmbedding(chunk.text, chunk.title);
             const result = await session.embed(text);
             if (result) {
+              if (!vecTableReady) {
+                console.log(`${c.dim}Model: ${result.model}${c.reset}\n`);
+                ensureVecTable(db, result.embedding.length);
+                vecTableReady = true;
+              }
               insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(result.embedding), model, now);
               chunksEmbedded++;
             } else {

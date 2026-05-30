@@ -139,40 +139,24 @@ export class RemoteLLM implements LLM {
       modelId = parts.slice(1).join('/');
     }
 
-    // Special handling for custom base URL (e.g. OpenRouter via OpenAI compat)
-    if (!modelStr.includes('/') && this.baseURL !== "https://api.openai.com/v1") {
-       // Construct a custom model object for pi-ai
-       // We use 'openai-completions' API type for generic OpenAI compatibility
+    // For any non-OpenAI base URL (OpenRouter, Ollama, etc.), skip pi-ai's
+    // model registry entirely — it only knows about built-in providers.
+    // Always return a custom OpenAI-compatible model object.
+    if (this.baseURL !== "https://api.openai.com/v1") {
        return {
          id: modelId,
          name: modelId,
          api: 'openai-completions',
-         provider: 'custom',
+         provider: provider,
          baseUrl: this.baseURL,
          input: ['text'],
          contextWindow: 128000, 
          maxTokens: 4096,
          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-       } as any; // Cast to any to avoid strict typing issues with Model union
+       } as any;
     }
 
-    try {
-      // Try to get from registry
-      return getModel(provider as any, modelId);
-    } catch (e) {
-      // Fallback for unknown models/providers - treat as custom OpenAI compatible
-      return {
-        id: modelId,
-        name: modelId,
-        api: 'openai-completions',
-        provider: provider,
-        baseUrl: this.baseURL,
-        input: ['text'],
-        contextWindow: 128000,
-        maxTokens: 4096,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-      } as any;
-    }
+    return getModel(provider as any, modelId);
   }
 
   async generate(prompt: string, options: GenerateOptions = {}): Promise<GenerateResult | null> {
